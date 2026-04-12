@@ -1,5 +1,5 @@
 # Use Runpod PyTorch base image
-FROM --platform=linux/amd64 runpod/pytorch:1.0.0-cu121-torch240-ubuntu2204
+FROM --platform=linux/amd64 12.1.1-cudnn8-devel-ubuntu22.04
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 # Set environment variables

@@ -101,8 +101,8 @@ dependencies = [
     "tokenizers==0.22.2",
     "tomli==2.4.1",
     "tomlkit==0.14.0",
-    "torch==2.11.0",
-    "torchvision>=0.26.0",
+    "torch",
+    "torchvision",
     "tqdm==4.67.3",
     "tqdm-loggable==0.4.1",
     "transformers==5.5.3",
@@ -119,3 +119,12 @@ dependencies = [
     "yarl==1.23.0",
     "zipp==3.23.0",
 ]
+
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch"}
+torchvision = { index = "pytorch"}
