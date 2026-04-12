@@ -1,4 +1,5 @@
 import functools
+import logging
 import os
 
 import imageio.v2 as imageio
@@ -14,6 +15,8 @@ from PIL import Image
 from tile import TilingDataset
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+
+logger = logging.getLogger(__name__)
 
 
 def visualize(
@@ -40,8 +43,10 @@ def save_prediction_only(
     pred_uint8: np.ndarray,
     output_dir: str,
 ) -> None:
+    out_path = os.path.join(output_dir, f"{file_prefix}_windowseat_output.jpg")
+    logger.info("Saving prediction: %s", out_path)
     imageio.imwrite(
-        os.path.join(output_dir, f"{file_prefix}_windowseat_output.png"),
+        out_path,
         pred_uint8,
         plugin="pillow",
     )
@@ -76,6 +81,7 @@ def flow_step(
     elif model_input.ndim == 4:
         model_input_4d = model_input
     else:
+        logger.error("Unexpected lat_encoding shape: %s", model_input.shape)
         raise ValueError(f"Unexpected lat_encoding shape: {model_input.shape}")
 
     B, C, H, W = model_input_4d.shape
@@ -166,6 +172,7 @@ def decode(latents: torch.Tensor, vae: AutoencoderKLQwenImage) -> torch.Tensor:
 
 
 def encode(image: torch.Tensor, vae: AutoencoderKLQwenImage) -> torch.Tensor:
+    logger.debug("Encoding image: shape=%s dtype=%s", image.shape, image.dtype)
     image = image.to(device=vae.device, dtype=vae.dtype)
     out = vae.encode(image.unsqueeze(2)).latent_dist.sample()
     latents_mean = torch.tensor(
@@ -188,12 +195,16 @@ def validate_single_dataset(
     data_loader: DataLoader,
     save_to_dir: str,
 ):
+    logger.info(
+        "Starting validation loop: batches=%d save_to=%s", len(data_loader), save_to_dir
+    )
     preds = []
 
     for i, batch in enumerate(
         tqdm(data_loader, desc=f"Reflection Removal Progress"),
         start=1,
     ):
+        logger.debug("Processing batch %d", i)
         batch["out"] = {}
         with torch.no_grad():
             latents = encode(batch["input_norm"], vae)
@@ -212,7 +223,13 @@ def validate_single_dataset(
             )
 
             if batch["is_last_tile"][b]:
-                # Stitch predictions together
+                scene_path = batch["line"][0][b]
+                scene_name = scene_path.split("/")[-1][:-4]
+                logger.info(
+                    "Stitching tiles for: %s (accumulated %d tiles)",
+                    scene_name,
+                    len(preds),
+                )
                 W = max(int(t["tile_info"][2]) for t in preds)
                 H = max(int(t["tile_info"][3]) for t in preds)
 
@@ -262,9 +279,14 @@ def validate_single_dataset(
             else:
                 continue
 
+            logger.info(
+                "Resizing stitched output to original resolution: %dx%d -> %dx%d",
+                H,
+                W,
+                orig_H,
+                orig_W,
+            )
             pred_ts = torch.from_numpy(pred).to(device)  # [3,H,W]
-            scene_path = batch["line"][0][b]
-            scene_name = scene_path.split("/")[-1][:-4]
 
             # Load original input image (CHW, uint8 in [0,255])
             input_chw = read_rgb_file(scene_path)
@@ -405,6 +427,15 @@ def run_inference(
     batch_size=2,
     num_workers=0,
 ):
+    logger.info(
+        "run_inference: image_dir=%s output_dir=%s processing_resolution=%d batch_size=%d num_workers=%d use_short_edge_tile=%s",
+        image_dir,
+        output_dir,
+        processing_resolution,
+        batch_size,
+        num_workers,
+        use_short_edge_tile,
+    )
     dataset = TilingDataset(
         transform_graph=functools.partial(
             data_transform, processing_resolution=processing_resolution
@@ -426,6 +457,11 @@ def run_inference(
 
     os.makedirs(output_dir, exist_ok=True)
 
+    logger.info("Dataset created: total_tiles=%d", len(dataset))
+    logger.info(
+        "DataLoader created: batch_size=%d num_workers=%d", batch_size, num_workers
+    )
+
     validate_single_dataset(
         vae,
         transformer,
@@ -433,3 +469,4 @@ def run_inference(
         data_loader=data_loader,
         save_to_dir=output_dir,
     )
+    logger.info("run_inference complete")

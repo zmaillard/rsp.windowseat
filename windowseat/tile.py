@@ -1,8 +1,12 @@
-import os
+import logging
 import math
+import os
 
 from PIL import Image
-from torch.utils.data import  Dataset
+from torch.utils.data import Dataset
+
+logger = logging.getLogger(__name__)
+
 
 def _required_side_for_axis(size: int, nmax: int, min_overlap: int) -> int:
     """Smallest tile side T (1D) so that #tiles <= nmax with overlap >= min_overlap."""
@@ -54,6 +58,9 @@ class TilingDataset(Dataset):
             for f in os.listdir(input_folder)
             if os.path.isfile(os.path.join(input_folder, f))
         )
+        logger.info(
+            "TilingDataset: found %d image(s) in %s", len(img_paths), input_folder
+        )
 
         self.filenames = []
 
@@ -98,10 +105,18 @@ class TilingDataset(Dataset):
                     f"need T >= {T_low}, but max square inside is {T_high}. "
                     f"Relax max_num_tiles_w/h or overlaps, allow non-square tiles, or pad."
                 )
+                logger.error(msg)
                 raise ValueError(msg)
             else:
                 T = max(T_low, min(pref_side, T_high))
                 Tw = Th = T
+                logger.debug(
+                    "Image %s (%dx%d): tile_size=%d",
+                    os.path.basename(p),
+                    W,
+                    H,
+                    T,
+                )
 
             # Build starts with axis-specific tile sizes
             xs = _starts(W, Tw, ow)
@@ -115,6 +130,8 @@ class TilingDataset(Dataset):
             if self.filenames:
                 self.filenames[-1][-1] = True
 
+        logger.info("TilingDataset: total tiles=%d", len(self.filenames))
+
     def __len__(self):
         return len(self.filenames)
 
@@ -122,5 +139,11 @@ class TilingDataset(Dataset):
         sample = {}
         sample["line"] = self.filenames[index]
         sample["idx"] = index
+        logger.debug(
+            "TilingDataset.__getitem__: index=%d file=%s tile=%s",
+            index,
+            self.filenames[index][0],
+            self.filenames[index][1],
+        )
         self.transform_graph(sample)
         return sample
