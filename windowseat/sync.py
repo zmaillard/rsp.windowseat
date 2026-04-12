@@ -2,7 +2,7 @@ import logging
 import os
 
 import dotenv
-from constants import BUCKET_NAME
+from windowseat.constants import BUCKET_NAME
 from minio import Minio
 
 logger = logging.getLogger(__name__)

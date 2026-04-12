@@ -12,7 +12,7 @@ from diffusers import (
     QwenImageTransformer2DModel,
 )
 from PIL import Image
-from tile import TilingDataset
+from windowseat.tile import TilingDataset
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
