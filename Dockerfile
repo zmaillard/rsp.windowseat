@@ -20,4 +20,4 @@ RUN apt-get update --yes && \
 COPY . /app
 RUN uv sync --locked
 
-CMD [ "python", "-u", "handler.py" ]
+CMD [ "uv", "run", "handler.py" ]
