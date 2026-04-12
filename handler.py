@@ -1,5 +1,6 @@
 import logging
 import os
+import traceback
 
 import runpod
 import torch
@@ -22,19 +23,6 @@ INPUT_DIR = os.path.join(CUR_DIR, "inputs")
 os.makedirs(INPUT_DIR, exist_ok=True)
 OUTPUT_DIR = os.path.join(CUR_DIR, "outputs")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-logger.info(
-    "Loading network (model=%s, lora=%s, device=%s)",
-    windowseat.MODEL,
-    windowseat.LORA_MODEL_URI,
-    windowseat.DEVICE,
-)
-vae, transformer, embeds_dict, processing_resolution = load_network(
-    windowseat.MODEL, windowseat.LORA_MODEL_URI, torch.device(windowseat.DEVICE)
-)
-logger.info(
-    "Network loaded successfully (processing_resolution=%s)", processing_resolution
-)
 
 
 def handler(job):
@@ -76,4 +64,33 @@ def handler(job):
     return {"status": "complete"}
 
 
-runpod.serverless.start({"handler": handler})
+def main():
+    try:
+        logger.info("Starting worker boot...")
+        logger.info(
+            "Loading network (model=%s, lora=%s, device=%s)",
+            windowseat.MODEL,
+            windowseat.LORA_MODEL_URI,
+            windowseat.DEVICE,
+        )
+
+        global vae, transformer, embeds_dict, processing_resolution
+        vae, transformer, embeds_dict, processing_resolution = load_network(
+            windowseat.MODEL, windowseat.LORA_MODEL_URI, torch.device(windowseat.DEVICE)
+        )
+        logger.info(
+            "Network loaded successfully (processing_resolution=%s)",
+            processing_resolution,
+        )
+
+        runpod.serverless.start({"handler": handler})
+
+    except Exception as e:
+        # print ensures something hits stdout even if logging misbehaves
+        print("FATAL BOOT ERROR:", repr(e), flush=True)
+        traceback.print_exc()
+        raise
+
+
+if __name__ == "__main__":
+    main()
