@@ -12,9 +12,9 @@ from diffusers import (
     QwenImageTransformer2DModel,
 )
 from PIL import Image
-from windowseat.tile import TilingDataset
 from torch.utils.data import DataLoader
-from tqdm import tqdm
+
+from windowseat.tile import TilingDataset
 
 logger = logging.getLogger(__name__)
 
@@ -195,120 +195,123 @@ def validate_single_dataset(
     data_loader: DataLoader,
     save_to_dir: str,
 ):
+    total_batches = len(data_loader)
     logger.info(
-        "Starting validation loop: batches=%d save_to=%s", len(data_loader), save_to_dir
+        "Starting validation loop: batches=%d save_to=%s", total_batches, save_to_dir
     )
     preds = []
 
-    for i, batch in enumerate(
-        tqdm(data_loader, desc=f"Reflection Removal Progress"),
-        start=1,
-    ):
-        logger.debug("Processing batch %d", i)
-        batch["out"] = {}
-        with torch.no_grad():
-            latents = encode(batch["input_norm"], vae)
-            latents = flow_step(latents, transformer, vae, embeds_dict)
-            batch["out"]["pixel_pred"] = decode(latents, vae)
+    for i, batch in enumerate(data_loader, start=1):
+        logger.info("Processing batch %d / %d", i, total_batches)
+        try:
+            batch["out"] = {}
+            with torch.no_grad():
+                latents = encode(batch["input_norm"], vae)
+                latents = flow_step(latents, transformer, vae, embeds_dict)
+                batch["out"]["pixel_pred"] = decode(latents, vae)
 
-        for b in range(len(batch["idx"])):
-            preds.append(
-                {
-                    "file": batch["line"][0][b],
-                    # [x0, y0, x1, y1] tuple for the tile
-                    "tile_info": [batch["tile_info"][i][b] for i in range(4)],
-                    # Shape 1, 3, H, W, torch tensor in range -1 to 1
-                    "pred": batch["out"]["pixel_pred"][b].to("cpu"),
-                }
-            )
+            for b in range(len(batch["idx"])):
+                preds.append(
+                    {
+                        "file": batch["line"][0][b],
+                        # [x0, y0, x1, y1] tuple for the tile
+                        "tile_info": [batch["tile_info"][i][b] for i in range(4)],
+                        # Shape 1, 3, H, W, torch tensor in range -1 to 1
+                        "pred": batch["out"]["pixel_pred"][b].to("cpu"),
+                    }
+                )
 
-            if batch["is_last_tile"][b]:
-                scene_path = batch["line"][0][b]
-                scene_name = scene_path.split("/")[-1][:-4]
+                if batch["is_last_tile"][b]:
+                    scene_path = batch["line"][0][b]
+                    scene_name = scene_path.split("/")[-1][:-4]
+                    logger.info(
+                        "Stitching tiles for: %s (accumulated %d tiles)",
+                        scene_name,
+                        len(preds),
+                    )
+                    W = max(int(t["tile_info"][2]) for t in preds)
+                    H = max(int(t["tile_info"][3]) for t in preds)
+
+                    acc = torch.zeros(3, H, W, dtype=torch.float32)
+                    wsum = torch.zeros(H, W, dtype=torch.float32)
+
+                    for t in preds:
+                        tile_info = [t["tile_info"][i] for i in range(4)]
+                        x0, y0, x1, y1 = map(int, tile_info)
+                        tile = t["pred"].squeeze(0).float()  # [3, h, w], [-1,1]
+
+                        h, w = tile.shape[-2:]
+                        tH, tW = (y1 - y0), (x1 - x0)
+                        if (h != tH) or (w != tW):
+                            tile = _lanczos_resize_chw(tile, (tH, tW))
+                            h, w = tH, tW
+
+                        # triangular window for the tile
+                        # fmt: off
+                        wx = 1 - (2 * torch.arange(w, dtype=torch.float32) / (max(w - 1, 1)) - 1).abs()
+                        wy = 1 - (2 * torch.arange(h, dtype=torch.float32) / (max(h - 1, 1)) - 1).abs()
+                        # fmt: on
+                        w2 = (wy[:, None] * wx[None, :]).clamp_min(1e-3)
+                        acc[:, y0:y1, x0:x1] += tile * w2
+                        wsum[y0:y1, x0:x1] += w2
+                    stitched = (acc / wsum.clamp_min(1e-6)).unsqueeze(
+                        0
+                    )  # [1,3,H,W], [-1,1]
+
+                    # Lanczos resize to gt_orig shape
+                    orig_H, orig_W = (
+                        batch["meta"]["orig_res"][0][b].item(),
+                        batch["meta"]["orig_res"][1][b].item(),
+                    )
+
+                    x = stitched.squeeze(0)
+                    x01 = ((x + 1.0) / 2.0).clamp(0.0, 1.0)
+                    device = x01.device
+
+                    pil = torchvision.transforms.functional.to_pil_image(x01.cpu())
+                    pil_resized = pil.resize((orig_W, orig_H), resample=Image.LANCZOS)
+                    pred_ts = torchvision.transforms.functional.to_tensor(
+                        pil_resized
+                    ).to(device)  # [3,H,W], [0,1]
+                    pred = pred_ts.cpu().numpy()
+                    preds = []
+                else:
+                    continue
+
                 logger.info(
-                    "Stitching tiles for: %s (accumulated %d tiles)",
-                    scene_name,
-                    len(preds),
+                    "Resizing stitched output to original resolution: %dx%d -> %dx%d",
+                    H,
+                    W,
+                    orig_H,
+                    orig_W,
                 )
-                W = max(int(t["tile_info"][2]) for t in preds)
-                H = max(int(t["tile_info"][3]) for t in preds)
+                pred_ts = torch.from_numpy(pred).to(device)  # [3,H,W]
 
-                acc = torch.zeros(3, H, W, dtype=torch.float32)
-                wsum = torch.zeros(H, W, dtype=torch.float32)
+                # Load original input image (CHW, uint8 in [0,255])
+                input_chw = read_rgb_file(scene_path)
+                input_hwc = (
+                    np.transpose(input_chw, (1, 2, 0)).astype(np.float32) / 255.0
+                )  # [H,W,3], [0,1]
 
-                for t in preds:
-                    tile_info = [t["tile_info"][i] for i in range(4)]
-                    x0, y0, x1, y1 = map(int, tile_info)
-                    tile = t["pred"].squeeze(0).float()  # [3, h, w], [-1,1]
+                pred_hwc = np.transpose(pred, (1, 2, 0))
+                if input_hwc.shape[:2] != pred_hwc.shape[:2]:
+                    pil_pred = Image.fromarray(
+                        (pred_hwc.clip(0, 1) * 255).round().astype(np.uint8)
+                    )
+                    H_in, W_in = input_hwc.shape[:2]
+                    pil_pred = pil_pred.resize((W_in, H_in), resample=Image.LANCZOS)
+                    pred_hwc = (np.array(pil_pred, dtype=np.uint8) / 255.0).clip(0, 1)
 
-                    h, w = tile.shape[-2:]
-                    tH, tW = (y1 - y0), (x1 - x0)
-                    if (h != tH) or (w != tW):
-                        tile = _lanczos_resize_chw(tile, (tH, tW))
-                        h, w = tH, tW
-
-                    # triangular window for the tile
-                    # fmt: off
-                    wx = 1 - (2 * torch.arange(w, dtype=torch.float32) / (max(w - 1, 1)) - 1).abs()
-                    wy = 1 - (2 * torch.arange(h, dtype=torch.float32) / (max(h - 1, 1)) - 1).abs()
-                    # fmt: on
-                    w2 = (wy[:, None] * wx[None, :]).clamp_min(1e-3)
-                    acc[:, y0:y1, x0:x1] += tile * w2
-                    wsum[y0:y1, x0:x1] += w2
-                stitched = (acc / wsum.clamp_min(1e-6)).unsqueeze(
-                    0
-                )  # [1,3,H,W], [-1,1]
-
-                # Lanczos resize to gt_orig shape
-                orig_H, orig_W = (
-                    batch["meta"]["orig_res"][0][b].item(),
-                    batch["meta"]["orig_res"][1][b].item(),
+                visualize(
+                    file_prefix=scene_name,
+                    input_hwc=input_hwc,
+                    pred_hwc=pred_hwc,
+                    output_dir=save_to_dir,
                 )
 
-                x = stitched.squeeze(0)
-                x01 = ((x + 1.0) / 2.0).clamp(0.0, 1.0)
-                device = x01.device
-
-                pil = torchvision.transforms.functional.to_pil_image(x01.cpu())
-                pil_resized = pil.resize((orig_W, orig_H), resample=Image.LANCZOS)
-                pred_ts = torchvision.transforms.functional.to_tensor(pil_resized).to(
-                    device
-                )  # [3,H,W], [0,1]
-                pred = pred_ts.cpu().numpy()
-                preds = []
-            else:
-                continue
-
-            logger.info(
-                "Resizing stitched output to original resolution: %dx%d -> %dx%d",
-                H,
-                W,
-                orig_H,
-                orig_W,
-            )
-            pred_ts = torch.from_numpy(pred).to(device)  # [3,H,W]
-
-            # Load original input image (CHW, uint8 in [0,255])
-            input_chw = read_rgb_file(scene_path)
-            input_hwc = (
-                np.transpose(input_chw, (1, 2, 0)).astype(np.float32) / 255.0
-            )  # [H,W,3], [0,1]
-
-            pred_hwc = np.transpose(pred, (1, 2, 0))
-            if input_hwc.shape[:2] != pred_hwc.shape[:2]:
-                pil_pred = Image.fromarray(
-                    (pred_hwc.clip(0, 1) * 255).round().astype(np.uint8)
-                )
-                H_in, W_in = input_hwc.shape[:2]
-                pil_pred = pil_pred.resize((W_in, H_in), resample=Image.LANCZOS)
-                pred_hwc = (np.array(pil_pred, dtype=np.uint8) / 255.0).clip(0, 1)
-
-            visualize(
-                file_prefix=scene_name,
-                input_hwc=input_hwc,
-                pred_hwc=pred_hwc,
-                output_dir=save_to_dir,
-            )
+        except Exception as e:
+            logger.exception("validate_single_dataset failed on batch %d: %s", i, e)
+            raise
 
     return
 
