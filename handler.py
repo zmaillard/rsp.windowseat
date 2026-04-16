@@ -57,6 +57,7 @@ def handler(job):
         logger.info("Uploading results: imageid=%s", imageid)
         sync.upload(OUTPUT_DIR)
         logger.info("Upload complete: imageid=%s", imageid)
+        sync.cleanup(INPUT_DIR, OUTPUT_DIR, imageid)
     except Exception as e:
         logger.exception("Job %s failed: %s", job.get("id"), e)
         return {"error": str(e)}

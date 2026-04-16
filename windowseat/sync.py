@@ -2,8 +2,9 @@ import logging
 import os
 
 import dotenv
-from windowseat.constants import BUCKET_NAME
 from minio import Minio
+
+from windowseat.constants import BUCKET_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,18 @@ client = Minio(
     access_key=os.getenv("R2_ACCESS_KEY", ""),
     secret_key=os.getenv("R2_SECRET_KEY", ""),
 )
+
+
+def cleanup(input_dir: str, output_dir: str, image_id: str):
+    image_id_file = f"{image_id}.jpg"
+    file_path_to_image = os.path.join(input_dir, image_id_file)
+    if os.path.exists(file_path_to_image):
+        os.remove(file_path_to_image)
+
+    image_result_file = f"{image_id}_windowseat_output.jpg"
+    file_path_to_output_image = os.path.join(output_dir, image_result_file)
+    if os.path.exists(file_path_to_output_image):
+        os.remove(file_path_to_output_image)
 
 
 def upload(output: str):
