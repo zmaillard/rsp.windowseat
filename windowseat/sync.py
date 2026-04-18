@@ -48,7 +48,10 @@ def upload(output: str):
         logger.info("Uploading %s to %s in bucket %s", item, new_path, BUCKET_NAME)
 
         client.fput_object(
-            bucket_name=BUCKET_NAME, object_name=new_path, file_path=item
+            bucket_name=BUCKET_NAME,
+            object_name=new_path,
+            file_path=item,
+            content_type="image/jpeg",
         )
         logger.info("Upload complete: %s", new_path)
 

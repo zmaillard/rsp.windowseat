@@ -11,3 +11,7 @@ wheels/
 
 # Just for reference
 windowseat.py
+
+.clj-kondo/
+.env
+.lsp/

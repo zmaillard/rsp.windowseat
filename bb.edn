@@ -1,0 +1,5 @@
+{:paths ["script"]
+ :tasks {queue-sign {:task queue-sign/-main
+                       :doc "Update Tags that do not match"}}} 
+         
+ 
