@@ -2,3 +2,5 @@
 .env
 README.md
 windowseat.py
+script/
+bb.edn

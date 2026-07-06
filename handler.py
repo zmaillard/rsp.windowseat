@@ -50,7 +50,7 @@ def handler(job):
             processing_resolution,
             INPUT_DIR,
             OUTPUT_DIR,
-            False,
+            True,
         )
         logger.info("Inference complete: imageid=%s", imageid)
 
